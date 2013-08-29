@@ -811,7 +811,7 @@ end
       getOps: (docName, from, to, callback) -> client.getOps cName, docName, from, to, callback
 
       fetch: (docName, callback) -> client.fetch cName, docName, callback
-      fetchAndObserve: (docName, callback) -> client.fetchAndObserve cName, docName, callback
+      fetchAndSubscribe: (docName, callback) -> client.fetchAndSubscribe cName, docName, callback
 
       queryFetch: (query, opts, callback) -> client.queryFetch cName, query, opts, callback
       query: (query, opts, callback) -> client.query cName, query, opts, callback
