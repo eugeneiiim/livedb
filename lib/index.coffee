@@ -89,6 +89,7 @@ exports.client = (options) ->
   getVersionKey = (cName, docName) -> "#{cName}.#{docName} v"
   getOpLogKey = (cName, docName) -> "#{cName}.#{docName} ops"
   getDocOpChannel = (cName, docName) -> "#{cName}.#{docName}"
+  getCollChannel = (cName) -> "#{cName}.ALL"
 
   processRedisOps = (to, result) ->
     #console.log 'processRedisOps', to, result
@@ -127,7 +128,7 @@ exports.client = (options) ->
     docPubEntry = JSON.stringify opData # Publish everything in opdata to the document's channel.
 
     redis.eval """
-local clientNonceKey, versionKey, opLogKey, docOpChannel = unpack(KEYS)
+local clientNonceKey, versionKey, opLogKey, docOpChannel, collChannel = unpack(KEYS)
 local seq, v, logEntry, docPubEntry, docVersion = unpack(ARGV) -- From redisSubmit, below.
 v = tonumber(v)
 seq = tonumber(seq)
@@ -157,7 +158,7 @@ if v < docVersion then
   -- performance and return any ops in redis, but livedb logic is simpler if I
   -- simply punt to getOps() below, and I don't think its a bottleneck.
   return "Transform needed"
-  --local ops = redis.call('lrange', opLogKey, -(docVersion - v), -1) 
+  --local ops = redis.call('lrange', opLogKey, -(docVersion - v), -1)
   --ops[#ops + 1] = docVersion
   --return ops
 elseif v > docVersion then
@@ -185,6 +186,7 @@ redis.call('persist', opLogKey)
 redis.call('persist', versionKey)
 
 redis.call('publish', docOpChannel, docPubEntry)
+redis.call('publish', collChannel, docPubEntry)
 
 -- Finally, save the new nonce. We do this here so we only update the nonce if
 -- we're at the most recent version in the oplog.
@@ -193,8 +195,8 @@ if seq ~= nil then
   redis.call('SET', clientNonceKey, seq)
   redis.call('EXPIRE', clientNonceKey, 60*60*24*7) -- 1 week
 end
-    """, 4, # num keys
-      opData.src, getVersionKey(cName, docName), getOpLogKey(cName, docName), prefixChannel(getDocOpChannel cName, docName), # KEYS table
+    """, 5, # num keys
+      opData.src, getVersionKey(cName, docName), getOpLogKey(cName, docName), prefixChannel(getDocOpChannel cName, docName), prefixChannel(getCollChannel cName), # KEYS table
       opData.seq, opData.v, logEntry, docPubEntry, docVersion, # ARGV table
       (err, result) ->
         return callback err if err
@@ -280,7 +282,7 @@ if v == realv - 1 then
   redis.call('expire', versionKey, 60*60*24) -- 1 day
   redis.call('expire', opLogKey, 60*60*24) -- 1 day
   redis.call('ltrim', opLogKey, -100, -1) -- Only 100 ops, counted from the end.
-   
+
   --redis.call('del', versionKey)
   --redis.call('del', opLogKey)
   --redis.call('del', opLogKey)
@@ -540,6 +542,8 @@ end
     # Callback called with (err, op stream). v must be in the past or present. Behaviour
     # with a future v is undefined (because I don't think thats an interesting case).
     subscribe: (cName, docName, v, callback) ->
+      console.log('subscribing to*', cName, docName, v)
+
       opChannel = getDocOpChannel cName, docName
 
       # Subscribe redis to the stream first so we don't miss out on any operations
@@ -570,6 +574,12 @@ end
             assert d.v is v
             v++
             stream.push d
+
+    subscribeAll: (cName, callback) ->
+      console.log('subscribing to all*', cName)
+
+      opChannel = getCollChannel(cName)
+      @_subscribeChannels opChannel, callback
 
     # Callback called with (err, {v, data})
     fetch: (cName, docName, callback) ->
@@ -653,7 +663,7 @@ end
     #  polling mode. Undefined will let the database decide.
     # shouldPoll: function(collection, docName, opData, index, query) {return true or false; }
     #  this is a syncronous function which can be used as an early filter for
-    #  operations going through the system to reduce the load on the backend. 
+    #  operations going through the system to reduce the load on the backend.
     # pollDelay: Minimum delay between subsequent database polls. This is used
     #  to batch updates to reduce load on the database at the expense of
     #  liveness.
@@ -807,6 +817,8 @@ end
     collection: (cName) ->
       submit: (docName, opData, options, callback) -> client.submit cName, docName, opData, options, callback
       subscribe: (docName, v, callback) -> client.subscribe cName, docName, v, callback
+
+      subscribeAll: (callback) -> client.subscribeAll cName, callback
 
       getOps: (docName, from, to, callback) -> client.getOps cName, docName, from, to, callback
 
